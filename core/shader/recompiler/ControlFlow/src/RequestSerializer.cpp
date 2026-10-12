@@ -762,7 +762,7 @@ std::string RequestSerializer::Serialize(const RecompileRequest& request) const 
     std::string buffer;
     Writer writer(buffer);
     writer.WriteU32(0x41505335u);
-    writer.WriteU32(25u);
+    writer.WriteU32(27u);
     writeShaderBinary(writer, request.shader);
     writeGuestContext(writer, request.context);
     writeSpirvTarget(writer, request.target);
@@ -786,6 +786,12 @@ std::string RequestSerializer::Serialize(const RecompileRequest& request) const 
     writer.WriteU32(request.target.registrationWordLimit);
     writer.WriteBool(request.target.vertexSubgroups);
     writer.WriteBool(request.target.float16DenormPreserve);
+    writer.WriteBool(request.target.depthRangeRemap);
+    if (request.context.vertex.has_value()) {
+        writer.WriteU32(request.context.vertex->depthRemapMode);
+        writer.WriteU32(request.context.vertex->depthRemapScale);
+        writer.WriteU32(request.context.vertex->depthRemapOffset);
+    }
     return base64Encode(buffer);
 }
 
@@ -794,7 +800,7 @@ DeserializedRequest RequestSerializer::Deserialize(std::string_view text) const 
     Reader reader(decoded);
     if (reader.ReadU32() != 0x41505335u) throw std::runtime_error("invalid recompile request signature");
     const auto version = reader.ReadU32();
-    if (version < 1u || version > 25u) throw std::runtime_error("unsupported recompile request serialization version");
+    if (version < 1u || version > 27u) throw std::runtime_error("unsupported recompile request serialization version");
     DeserializedRequest result{};
     result.request.shader = readShaderBinary(reader, result.shaderCode, result.shaderHeader);
     result.request.context = readGuestContext(reader, result, version);
@@ -820,14 +826,22 @@ DeserializedRequest RequestSerializer::Deserialize(std::string_view text) const 
     if (version >= 18u) result.request.target.vertexSubgroups = reader.ReadBool();
     if (version >= 21u) {
         if (version >= 22u) reader.Require(1u);
-        if (reader.Remaining() == 1u) {
+        if (reader.Remaining() != 0u) {
             const auto float16DenormPreserve = reader.ReadU8();
             if (float16DenormPreserve > 1u) throw std::runtime_error("RequestSerializer: invalid float16DenormPreserve value");
             result.request.target.float16DenormPreserve = float16DenormPreserve != 0u;
-        } else if (reader.Remaining() != 0u) {
-            throw std::runtime_error("RequestSerializer: unexpected trailing data");
         }
     }
+    if (version >= 27u) {
+        result.request.target.depthRangeRemap = reader.ReadBool();
+        if (result.vertex.has_value()) {
+            result.vertex->depthRemapMode = reader.ReadU32();
+            result.vertex->depthRemapScale = reader.ReadU32();
+            result.vertex->depthRemapOffset = reader.ReadU32();
+            result.request.context.vertex = result.vertex;
+        }
+    }
+    if (version >= 21u && reader.Remaining() != 0u) throw std::runtime_error("RequestSerializer: unexpected trailing data");
     return result;
 }
 
