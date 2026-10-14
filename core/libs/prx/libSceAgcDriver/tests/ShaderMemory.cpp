@@ -3078,6 +3078,61 @@ void verifyVertexInfoVersion19() {
     }
 }
 
+void verifyDepthRemapRequests() {
+    using namespace ShaderRecompiler;
+    const std::array<std::uint32_t, 1> code{0xbf810000u};
+    const RequestSerializer serializer;
+    RecompileRequest vertex{};
+    vertex.shader = {ShaderStage::Vertex, 0x10000u, code, 0, {}};
+    vertex.context.waveSize = 64;
+    vertex.context.vertex = ShaderVertexStageInfo{};
+    vertex.context.vertex->paClVsOutCntl = 0x89abcdefu;
+    const auto plain = serializer.Serialize(vertex);
+    vertex.target.depthRangeRemap = true;
+    vertex.context.vertex->depthRemapMode = 2u;
+    vertex.context.vertex->depthRemapScale = 0x40000000u;
+    vertex.context.vertex->depthRemapOffset = 0xbf000000u;
+    const auto remapped = serializer.Serialize(vertex);
+    const auto replay = serializer.Deserialize(remapped);
+    require(replay.request.target.depthRangeRemap && replay.request.context.vertex.has_value() && replay.request.context.vertex->paClVsOutCntl == 0x89abcdefu, "the depth remap target flag or the vertex info did not round-trip");
+    require(replay.request.context.vertex->depthRemapMode == 2u && replay.request.context.vertex->depthRemapScale == 0x40000000u && replay.request.context.vertex->depthRemapOffset == 0xbf000000u, "the depth remap mode, scale or offset did not round-trip");
+    require(serializer.Serialize(replay.request) == remapped, "a version 27 depth remap request changed on re-serialization");
+    const auto plainBytes = decodeBase64(plain);
+    const auto remappedBytes = decodeBase64(remapped);
+    require(plainBytes.size() == remappedBytes.size() && plainBytes.size() > 13u && std::equal(plainBytes.begin(), plainBytes.end() - 13, remappedBytes.begin()), "the depth remap fields are not the last 13 bytes of a vertex request");
+    auto version25 = remappedBytes;
+    version25[4] = 25u;
+    version25.resize(version25.size() - 13u);
+    const auto legacy = serializer.Deserialize(encodeBase64(version25));
+    require(!legacy.request.target.depthRangeRemap && legacy.request.context.vertex.has_value() && legacy.request.context.vertex->depthRemapMode == 0u && legacy.request.context.vertex->depthRemapScale == 0u && legacy.request.context.vertex->depthRemapOffset == 0u, "a version 25 vertex request read depth remap fields");
+    require(serializer.Serialize(legacy.request) == plain, "a version 25 vertex request misread the fields before the depth remap");
+    auto truncated = remappedBytes;
+    truncated.pop_back();
+    expectFailure([&] { static_cast<void>(serializer.Deserialize(encodeBase64(truncated))); }, "truncated data", "a truncated depth remap offset was accepted");
+    auto trailing = remappedBytes;
+    trailing.push_back(0u);
+    expectFailure([&] { static_cast<void>(serializer.Deserialize(encodeBase64(trailing))); }, "unexpected trailing data", "a byte after the depth remap fields was accepted");
+    RecompileRequest pixel{};
+    pixel.shader = {ShaderStage::Fragment, 0x20000u, code, 0, {}};
+    pixel.context.waveSize = 64;
+    pixel.context.pixel = ShaderPixelStageInfo{};
+    pixel.target.depthRangeRemap = true;
+    const auto pixelReplay = serializer.Deserialize(serializer.Serialize(pixel));
+    require(pixelReplay.request.target.depthRangeRemap && !pixelReplay.request.context.vertex.has_value(), "a pixel request lost the depth remap target flag or gained vertex info");
+    std::vector<std::uint64_t> key;
+    std::vector<std::uint64_t> other;
+    RecompileCacheKey::Build(vertex, key);
+    auto moved = vertex;
+    moved.context.vertex->depthRemapScale = 0x3f000000u;
+    moved.context.vertex->depthRemapOffset = 0x3e800000u;
+    RecompileCacheKey::Build(moved, other);
+    require(key == other, "the viewport depth scale or offset entered the shader cache key");
+    auto zeroToOne = vertex;
+    zeroToOne.context.vertex->depthRemapMode = 1u;
+    RecompileCacheKey::Build(zeroToOne, other);
+    require(key != other, "the depth remap mode did not change the shader cache key");
+}
+
 void verifyLegacyPixelRequests() {
     using namespace ShaderRecompiler;
     static constexpr std::array<std::string_view, 14> legacyPixelRequests{
@@ -4839,6 +4894,7 @@ int main(int argc, char** argv) {
         verifyCanonicalVersion20And21Requests();
         verifyPixelRequestSerialization();
         verifyVertexInfoVersion19();
+        verifyDepthRemapRequests();
         verifyPositionExportComponents();
         verifyLegacyPixelRequests();
         verifyPixelExportReplay();

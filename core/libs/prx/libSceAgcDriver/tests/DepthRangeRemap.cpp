@@ -1,5 +1,6 @@
 #include "Recompiler.hpp"
 #include "PipelineSpecialization.hpp"
+#include "Optimization/ResourceProgram.hpp"
 #include <spirv/unified1/spirv.hpp>
 #include <array>
 #include <bit>
@@ -85,6 +86,25 @@ void require(bool condition, const char* what) {
     if (!condition) throw std::runtime_error(what);
 }
 
+void preparedTransformTests() {
+    using namespace ShaderRecompiler;
+    auto request = baseRequest(true);
+    request.useCache = true;
+    const auto handle = PrepareShader(request);
+    const auto materialize = [&](float scale, float offset) {
+        auto moved = request;
+        moved.context.vertex->depthRemapScale = std::bit_cast<std::uint32_t>(scale);
+        moved.context.vertex->depthRemapOffset = std::bit_cast<std::uint32_t>(offset);
+        const auto invocation = PreparedShaderInvocation::TryCreate(moved, handle);
+        require(invocation.has_value(), "another depth transform did not match the prepared vertex shader");
+        return invocation->Materialize(*invocation->Capture(SrtRuntime{}));
+    };
+    const auto first = materialize(1.0f, 0.0f);
+    const auto scaled = materialize(4.0f, -1.5f);
+    require(scaled->PipelineVariantId() != first->PipelineVariantId(), "a prepared vertex shader reused the result materialized for another depth transform");
+    require(materialize(1.0f, 0.0f)->PipelineVariantId() == first->PipelineVariantId(), "the same depth transform did not reuse its materialized vertex shader");
+}
+
 }
 
 int main() {
@@ -95,6 +115,7 @@ int main() {
         require(remapped.clipDistanceBuiltIn && remapped.clipDistanceLength == plain.clipDistanceLength + 2u, "the remap did not add its two clip distances");
         require(remapped.multiplies >= plain.multiplies + 2u, "the remap does not scale the clip z and offset it by w");
         require(!plain.specializationDefaults.contains(PipelineSpecialization::DepthRemapBase) && !remapped.specializationDefaults.contains(PipelineSpecialization::DepthRemapBase + 3u), "unexpected specialization constants");
+        preparedTransformTests();
         std::cout << "Depth range remap tests passed\n";
         return 0;
     } catch (const std::exception& error) {

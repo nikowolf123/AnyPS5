@@ -1180,6 +1180,8 @@ std::uint64_t snapshotHash(const RecompileRequest& request, const ResourceSnapsh
             for (const auto field : vertex.resources[i].fields) mix(field);
             mix(vertex.resourcesDst[i].fetchIndex);
         }
+        mix(vertex.depthRemapScale);
+        mix(vertex.depthRemapOffset);
     } else {
         mix(1ull << 32u);
     }
