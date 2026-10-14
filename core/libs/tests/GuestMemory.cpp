@@ -841,6 +841,46 @@ static void CheckReservedRangeIsNotCommitted() {
     Require(sceKernelReleaseDirectMemory(phys, page) == 0);
 }
 
+static bool RefusedAsFixedMapping(const GuestAllocations::Mutation& mutation, const void* pointer, std::size_t bytes) {
+    try {
+        mutation.RequireAvailable(pointer, bytes);
+    } catch (const std::runtime_error&) {
+        return true;
+    }
+    return false;
+}
+
+static void CheckOverlapsAtRangeEdges() {
+    constexpr std::size_t bytes = 64;
+    std::array<std::byte, bytes * 8> memory{};
+    const auto at = [&](std::size_t slot) { return memory.data() + slot * bytes; };
+    GuestAllocations::Mutation mutation;
+    mutation.Add(at(1), bytes, true, true, false);
+    mutation.Add(at(3), bytes * 2, true, true, false);
+    mutation.Add(at(6), bytes, false, false, false);
+    const auto overlaps = [&](const std::byte* pointer, std::size_t size) {
+        const bool found = mutation.Overlaps(pointer, size);
+        Require(found == RefusedAsFixedMapping(mutation, pointer, size));
+        return found;
+    };
+    Require(!overlaps(at(0), bytes));
+    Require(!overlaps(at(2), bytes));
+    Require(!overlaps(at(5), bytes));
+    Require(!overlaps(at(7), bytes));
+    Require(overlaps(at(0), bytes + 1));
+    Require(overlaps(at(2) - 1, 1));
+    Require(overlaps(at(2) - 1, bytes + 2));
+    Require(overlaps(at(4), bytes / 4));
+    Require(overlaps(at(5) - 1, 1));
+    Require(overlaps(at(2) + bytes / 2, bytes));
+    Require(overlaps(at(5), bytes * 2));
+    Require(overlaps(at(0), bytes * 8));
+    mutation.Remove(at(1));
+    mutation.Remove(at(3));
+    mutation.Remove(at(6));
+    Require(!overlaps(at(0), bytes * 8));
+}
+
 static void CheckNoOverwriteRefusesLiveMapping() {
     constexpr std::size_t page = 0x4000;
     constexpr int outOfMemory = static_cast<int>(0x8002000cu);
@@ -2311,6 +2351,38 @@ static void CheckMappingCostFollowsTheMappingCount() {
     Require(large <= small * 48);
     Require(sceKernelReleaseDirectMemory(phys, page * many) == 0);
 }
+
+static double OverlapChecksAboveSeconds(std::byte* memory, std::size_t ranges) {
+    constexpr std::size_t bytes = 64;
+    const auto threadSeconds = [] {
+        timespec now{};
+        Require(clock_gettime(CLOCK_THREAD_CPUTIME_ID, &now) == 0);
+        return static_cast<double>(now.tv_sec) + static_cast<double>(now.tv_nsec) * 1e-9;
+    };
+    GuestAllocations::Mutation mutation;
+    for (std::size_t index = 0; index < ranges; ++index) mutation.Add(memory + index * bytes * 2, bytes, true, true, false);
+    const auto* above = memory + ranges * bytes * 2;
+    auto best = std::numeric_limits<double>::max();
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        const auto before = threadSeconds();
+        for (int call = 0; call < 4096; ++call) {
+            Require(!mutation.Overlaps(above, bytes));
+            mutation.RequireAvailable(above, bytes);
+        }
+        best = std::min(best, threadSeconds() - before);
+    }
+    for (std::size_t index = 0; index < ranges; ++index) mutation.Remove(memory + index * bytes * 2);
+    return best;
+}
+
+static void CheckOverlapCostIgnoresRangesBelow() {
+    constexpr std::size_t few = 1024;
+    constexpr std::size_t many = few * 32;
+    std::vector<std::byte> memory(many * 64 * 2 + 64);
+    const auto small = OverlapChecksAboveSeconds(memory.data(), few);
+    const auto large = OverlapChecksAboveSeconds(memory.data(), many);
+    Require(large <= small * 8);
+}
 #endif
 
 static void CheckVirtualQuerySplitFlexibleRanges() {
@@ -2562,6 +2634,7 @@ int main(int argc, char** argv) {
     CheckReservedRangeIsNotCommitted();
     CheckHintInsideReservation();
     CheckNoOverwriteRefusesLiveMapping();
+    CheckOverlapsAtRangeEdges();
     CheckMlock();
     CheckSharedDirectMemoryLifecycle();
     CheckGetDirectMemoryType();
@@ -2600,6 +2673,7 @@ int main(int argc, char** argv) {
     CheckDirectMemoryWriteWatch();
     CheckDirectMemoryWriteWatchFollowsRemovedMappings();
     CheckMappingCostFollowsTheMappingCount();
+    CheckOverlapCostIgnoresRangesBelow();
     CheckDirectMemoryBackingNeedsNoFilesystem();
     CheckDirectMemorySharedBacking();
     CheckVirtualQueryFindsNeighbours();
