@@ -2675,12 +2675,13 @@ void DepthRemapTests() {
     queue.context[0xb5] = std::bit_cast<std::uint32_t>(0.75f);
     auto bounded = AgcDriver::Graphics::DecodeState(queue);
     AgcDriver::Graphics::ApplyDepthRemap(remapping, bounded);
-    Require(bounded.depthRemap.mode == 1 && bounded.depthRemap.scale == 2.0f && bounded.depthRemap.offset == -0.5f && bounded.viewport.minDepth == 0.25f && bounded.viewport.maxDepth == 0.75f, "a zero-to-one remap did not take the clamp bounds");
+    Require(bounded.depthRemap.mode == 1 && bounded.depthRemap.scale == 4.0f && bounded.depthRemap.offset == -1.5f && bounded.viewport.minDepth == 0.25f && bounded.viewport.maxDepth == 0.75f, "a zero-to-one remap did not divide its transform by the clamp range it gives the viewport");
     queue.context[0xb4] = std::bit_cast<std::uint32_t>(-1.0f);
     queue.context[0xb5] = std::bit_cast<std::uint32_t>(2.0f);
     auto clipped = AgcDriver::Graphics::DecodeState(queue);
     AgcDriver::Graphics::ApplyDepthRemap(remapping, clipped);
     Require(clipped.depthRemap.mode == 1 && clipped.viewport.minDepth == 0 && clipped.viewport.maxDepth == 1, "clamp bounds beyond [0, 1] were not clipped to the representable depth range");
+    Require(clipped.depthRemap.scale == 2.0f && clipped.depthRemap.offset == -0.5f, "clamp bounds clipped to [0, 1] changed the depth transform");
     auto unorm = AgcDriver::Graphics::DecodeState(queue);
     unorm.depth = AgcDriver::Graphics::DepthTarget{0x10000, 0, {64, 64}, VK_FORMAT_D16_UNORM, 0.0f, 0};
     unorm.depthTest = unorm.depthWrite = true;

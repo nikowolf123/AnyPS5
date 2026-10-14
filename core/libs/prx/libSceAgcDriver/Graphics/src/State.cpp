@@ -751,7 +751,10 @@ void ApplyDepthRemap(const Context& context, State& state) {
             std::fprintf(stderr, "[gpu] viewport depth clamp bounds [%g, %g] on a float depth target are clipped to [0, 1]: the device has no VK_EXT_depth_range_unrestricted\n", state.depthClampMin, state.depthClampMax);
         }
     }
-    state.depthRemap = {state.negativeOneToOne ? 2u : 1u, state.depthScale, state.depthOffset};
+    const float range = clampMax - clampMin;
+    const float scale = range > 0.0f ? state.depthScale / range : state.depthScale;
+    const float offset = range > 0.0f ? (state.depthOffset - clampMin) / range : state.depthOffset;
+    state.depthRemap = {state.negativeOneToOne ? 2u : 1u, scale, offset};
     state.viewport.minDepth = clampMin;
     state.viewport.maxDepth = clampMax;
     state.negativeOneToOne = false;
